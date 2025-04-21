@@ -23,7 +23,7 @@ KAFKA_CONFIG = {
 # Configuración de PostgreSQL
 DB_CONFIG = {
     'host': 'ep-proud-cherry-a42qb93z-pooler.us-east-1.aws.neon.tech',
-    'database': 'movies',
+    'database': 'neondb',
     'user': 'neondb_owner',
     'password': 'npg_pq06QGMmydeK',
     'port': '5432'
