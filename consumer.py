@@ -1,108 +1,98 @@
-from confluent_kafka import Consumer, KafkaException, KafkaError
-from flask import Flask
-import threading
+from confluent_kafka import Consumer, KafkaError
 import psycopg2
-import logging
 import json
-import os
+import logging
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-app = Flask(__name__)
-
+# Configuración de Kafka
 KAFKA_CONFIG = {
     'bootstrap.servers': 'cvqocn6qn6pkj5g2nf5g.any.us-west-2.mpx.prd.cloud.redpanda.com:9092',
     'security.protocol': 'SASL_SSL',
     'sasl.mechanism': 'SCRAM-SHA-256',
     'sasl.username': 'GioJCG',
     'sasl.password': 'FEovgbUIbtjaaCsV2tSzbvyRYZbBPh',
-    'group.id': 'movies_pg-consumer-group',
+    'group.id': 'movies-consumer-group',  # ¡IMPORTANTE!
     'auto.offset.reset': 'earliest',
     'enable.auto.commit': False
 }
 
-DB_PARAMS = {
-    'dbname': 'movies',
-    'user': 'neondb_owner',
-    'password': 'npg_pq06QGMmydeK',
-    'host': 'ep-proud-cherry-a42qb93z-pooler.us-east-1.aws.neon.tech',
+# Configuración de PostgreSQL
+DB_CONFIG = {
+    'host': 'ep-curly-recipe-a50hnh5z-pooler.us-east-2.aws.neon.tech',
+    'database': 'movies',
+    'user': 'neodb_owner',
+    'password': 'npg_QUkH7TfKZlF8',
     'port': '5432'
 }
 
-TOPIC = "movies_pg"
-
 def get_db_connection():
-    return psycopg2.connect(**DB_PARAMS)
+    return psycopg2.connect(**DB_CONFIG)
 
-def insert_movie(data: dict):
-    required_field = 'title'
-    
-    if required_field not in data:
-        logging.warning(f"Campo faltante en el registro: {data}")
-        return False
-
+def insert_movie(data):
+    conn = None
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                    INSERT INTO movies (title)
-                    VALUES (%s)
-                    ON CONFLICT (title) DO NOTHING;
-                """
-                cur.execute(query, (data['title'],))
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        query = """
+        INSERT INTO movies (title)
+        VALUES (%s)
+        ON CONFLICT (title) DO NOTHING;
+        """
+        cur.execute(query, (data['title'],))
+        conn.commit()
+        
         logging.info(f"Película insertada: {data['title']}")
         return True
-    except psycopg2.errors.UniqueViolation:
-        logging.warning(f"Película duplicada, ya existe: {data['title']}")
-        return 
+        
     except Exception as e:
-        logging.error(f"Error al insertar la película: {e}", exc_info=True)
+        logging.error(f"Error al insertar película: {e}")
+        if conn:
+            conn.rollback()
         return False
+    finally:
+        if conn:
+            conn.close()
 
-def kafka_consumer_loop():
+def consume_messages():
     consumer = Consumer(KAFKA_CONFIG)
-    consumer.subscribe([TOPIC])
-    logging.info(f"Consumer suscrito al tópico: {TOPIC}")
+    consumer.subscribe(['movies_pg'])
 
     try:
         while True:
             msg = consumer.poll(1.0)
+            
             if msg is None:
                 continue
-
+                
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     continue
-                logging.error(f"Error en mensaje: {msg.error()}")
-                break
+                else:
+                    logging.error(f"Error de Kafka: {msg.error()}")
+                    break
 
             try:
                 data = json.loads(msg.value().decode('utf-8'))
-                logging.info(f"Raw Kafka mensaje: {msg.value()}")
-                was_inserted = insert_movie(data)
-                if was_inserted:
-                    consumer.commit(asynchronous=False)
+                logging.info(f"Mensaje recibido: {data}")
+                
+                if insert_movie(data):
+                    consumer.commit(msg)
                     
             except json.JSONDecodeError as e:
-                logging.warning(f"Error en JSON: {e} | Mensaje: {msg.value()}")
+                logging.error(f"Error decodificando JSON: {e}")
             except Exception as e:
-                logging.error(f"Error general al procesar mensaje: {e}", exc_info=True)
+                logging.error(f"Error procesando mensaje: {e}")
+
     except KeyboardInterrupt:
-        logging.info("Consumer detenido por el usuario.")
+        logging.info("Deteniendo consumer...")
     finally:
         consumer.close()
-        logging.info("Consumer cerrado.")
 
-@app.route("/health")
-def health_check():
-    return "ok", 200
-
-def main():
-    threading.Thread(target=kafka_consumer_loop, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    logging.info("Iniciando consumer...")
+    consume_messages()
